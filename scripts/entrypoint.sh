@@ -25,24 +25,29 @@ eof exit
 
         /root/${RAND1} > /root/${RAND2}
 
-        HASH=$(cat /root/${RAND2} | grep Hash | awk '{print $3}')
-        SALT=$(cat /root/${RAND2} | grep Salt | awk '{print $3}')
+        HASH="$(cat /root/${RAND2} | grep Hash | awk '{print $3}')"
         SALT="$(cat /root/${RAND2} | grep Salt | awk '{print $3}')"
 
-        sed -i 's/USER/'${USERNAME}'/g' /znc-data/configs/znc.conf
-        sed -i 's/ZNCPORT/'${ZNCPORT}'/g' /znc-data/configs/znc.conf
-        sed -i 's/ZNCHASH/'${HASH}'/g' /znc-data/configs/znc.conf
-        sed -i 's/ZNCSALT/'${SALT}'/g' /znc-data/configs/znc.conf
+        sed -i 's|USER|'${USERNAME}'|g' /znc-data/configs/znc.conf
+        sed -i 's|ZNCPORT|'${ZNCPORT}'|g' /znc-data/configs/znc.conf
+        sed -i 's|ZNCHASH|'${HASH}'|g' /znc-data/configs/znc.conf
+        sed -i 's|ZNCSALT|'${SALT}'|g' /znc-data/configs/znc.conf
 
         rm -rf /root/${RAND1}
         rm -rf /root/${RAND2}
     else
         # so it is an update/migration!
-        echo "Updating the ZNC Port"
+        echo "Updating the ZNC Config"
         sed -ie 's/Port =.*/Port = '${ZNCPORT}'/g' /znc-data/configs/znc.conf
-
+        sed -i 's/SSL = false/SSL = true/g' /znc-data/configs/znc.conf
+        sed -i 's@SSLCertFile = /znc-data/znc.pem@SSLCertFile = /etc/ssl/private/cert.pem@g' /znc-data/configs/znc.conf
+        sed -i 's@SSLDHParamFile = /znc-data/znc.pem@SSLDHParamFile = /znc-data/dh.pem@g' /znc-data/configs/znc.conf
+        sed -i 's@SSLKeyFile = /znc-data/znc.pem@SSLKeyFile = /etc/ssl/private/key.pem@g' /znc-data/configs/znc.conf
     fi
 
+    if [ ! -f /znc-data/dh.pem ]; then
+        openssl dhparam -out /znc-data/dh.pem 2048
+    fi
 
     chown -R znc:znc /znc-data
     chmod 700 /znc-data
