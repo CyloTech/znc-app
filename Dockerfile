@@ -22,6 +22,11 @@ ADD /sources/znc.conf /znc.conf
 ADD scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Sends POST /v1/apps/installed/${INSTANCE_ID} for the entrypoint. It retries
+# network errors, 408, 429 and 5xx and stops on any other status.
+COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
+RUN chmod 755 /usr/local/bin/appbox-installed-callback
+
 RUN mkdir -p /appbox/scripts
 ADD scripts/changepassword.sh /appbox/scripts/changepassword.sh
 RUN chmod +x /appbox/scripts/changepassword.sh

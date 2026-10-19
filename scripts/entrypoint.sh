@@ -52,12 +52,21 @@ eof exit
     chown -R znc:znc /znc-data
     chmod 700 /znc-data
 
-    #Tell Apex we're done installing.
-until [[ $(curl -i -H "Accept: application/json" -H "Content-Type:application/json" -X POST "https://api.cylo.io/v1/apps/installed/${INSTANCE_ID}" | grep '200') ]]
-    do
-    sleep 5
-done
+    # Tell Appbox we're done installing: mark the callback pending. It is sent
+    # in the background below, so it can never keep ZNC from starting.
+    touch /etc/appbox_callback_pending
     touch /etc/app_configured
+fi
+
+# Send a pending installed callback in the background. The helper retries
+# network errors, 408, 429 and 5xx and stops on any other status (e.g. 401
+# once the token was used or cleared) instead of retrying forever.
+if [ -f /etc/appbox_callback_pending ]; then
+    (
+        set +e
+        /usr/local/bin/appbox-installed-callback
+        rm -f /etc/appbox_callback_pending
+    ) </dev/null &
 fi
 
 /bin/su -s /bin/bash -c "znc --foreground --datadir /znc-data" znc
