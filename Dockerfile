@@ -31,10 +31,6 @@ RUN chmod +x /entrypoint.sh
 COPY appbox-installed-callback /usr/local/bin/appbox-installed-callback
 RUN chmod 755 /usr/local/bin/appbox-installed-callback
 
-RUN mkdir -p /appbox/scripts
-ADD scripts/changepassword.sh /appbox/scripts/changepassword.sh
-RUN chmod +x /appbox/scripts/changepassword.sh
-
 RUN setcap cap_net_bind_service=+ep /usr/local/bin/znc
 
 EXPOSE 80
