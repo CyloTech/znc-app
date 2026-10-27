@@ -1,7 +1,14 @@
 #!/bin/bash
-set -x
 
 if [ ! -f /etc/app_configured ]; then
+    # The ZNC password comes from the install form. There is no built-in
+    # default, so refuse to set ZNC up without one (and do not report the
+    # install as finished).
+    if [ -z "${ZNCPASS:-}" ]; then
+        echo "ZNCPASS is empty; refusing to set up ZNC without a password." >&2
+        exit 1
+    fi
+
     mkdir -p /znc-data/configs
 
     # If this is not an update....

@@ -17,6 +17,7 @@ set -u
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 helper="${repo_root}/appbox-installed-callback"
 token_id='999?callback_token=querytoken0123456789'
+znc_password='gatepassword0123456789'
 header_token='headertoken0123456789'
 
 # Answers GET with 200 (readiness) and each POST with the next status from a
@@ -93,7 +94,7 @@ run_limited() {
 }
 
 request_count() { cat "${work}/requests" 2>/dev/null | wc -l | tr -d ' '; }
-token_logged() { grep -cE 'querytoken|headertoken' "${work}/output"; }
+token_logged() { grep -cE 'querytoken|headertoken|gatepassword' "${work}/output"; }
 
 # --- helper ------------------------------------------------------------------
 
@@ -206,7 +207,7 @@ entrypoint_case() {
     started_at=$(date +%s)
     env INSTANCE_ID="${token_id}" CALLBACK_TOKEN="${header_token}" \
         APPBOX_CALLBACK_BASE="http://127.0.0.1:${port}" \
-        APPBOX_CALLBACK_RETRY_DELAY=1 "$@" \
+        APPBOX_CALLBACK_RETRY_DELAY=1 ZNCPASS="${znc_password}" "$@" \
         "${sandbox}" bash -c "date +%s >'${work}/app_started'; sleep 1" \
         >"${work}/output" 2>&1 &
     entrypoint_pid=$!
@@ -272,6 +273,39 @@ entrypoint_case "entrypoint.sh first boot" 401 1 update
 entrypoint_case "entrypoint.sh SKIP_APPBOX_CALLBACK=1" 200 0 update SKIP_APPBOX_CALLBACK=1
 entrypoint_case "entrypoint.sh restart-pending" 503,200 2 restart_pending
 entrypoint_case "entrypoint.sh restart" 200 0 restart
+
+# Without ZNCPASS the first start stops before setting anything up: ZNC does
+# not start, nothing is sent and neither marker is written.
+refused_case() {
+    local label=$1
+    shift
+    start_mock 200
+    local sandbox="${work}/start-script"
+    sandbox_start_script "${sandbox}"
+    chmod +x "${sandbox}"
+    update
+    run_limited 10 env -u ZNCPASS INSTANCE_ID="${token_id}" CALLBACK_TOKEN="${header_token}" \
+        APPBOX_CALLBACK_BASE="http://127.0.0.1:${port}" "$@" \
+        "${sandbox}" bash -c "date +%s >'${work}/app_started'" >"${work}/output" 2>&1
+    local rc=$?
+    sleep 1
+    if [[ "${rc}" != 0 && "${rc}" != 124 && ! -f "${work}/app_started" && ! -f "${work}/callback_pending" \
+        && ! -f "${work}/app_configured" && "$(request_count)" == 0 ]] \
+        && grep -q 'refusing to set up ZNC' "${work}/output"; then
+        pass "${label}: exit ${rc}, ZNC not started, no callback"
+    else
+        fail "${label}: exit=${rc} app_started=$([[ -f "${work}/app_started" ]] && echo yes || echo no) requests=$(request_count)"
+    fi
+    stop_mock
+}
+refused_case "entrypoint.sh without ZNCPASS"
+refused_case "entrypoint.sh with empty ZNCPASS" ZNCPASS=
+
+if grep -qE '^[[:space:]]*set -[a-z]*x' "${repo_root}/scripts/entrypoint.sh"; then
+    fail "entrypoint.sh traces its commands (set -x)"
+else
+    pass "entrypoint.sh does not trace its commands"
+fi
 
 if grep -q 'apps/installed' "${repo_root}/scripts/entrypoint.sh"; then
     fail "entrypoint.sh still calls the installed callback itself"

@@ -1,7 +1,8 @@
 FROM alpine:3.18
 
+# ZNCPASS has no default: Appbox always passes the ZNC Password from the
+# install form, and entrypoint.sh refuses to set ZNC up without it.
 ENV USERNAME=admin
-ENV ZNCPASS=admin123
 ENV ZNCPORT=6667
 
 RUN addgroup -S znc -g 1000
