@@ -17,31 +17,21 @@ if [ ! -f /etc/app_configured ]; then
 
         mv /znc.conf /znc-data/configs/znc.conf
 
-        RAND1=$(echo `</dev/urandom tr -dc A-Za-z0-9 | head -c18`)
-        RAND2=$(echo `</dev/urandom tr -dc A-Za-z0-9 | head -c18`)
-
-echo '#!/usr/bin/expect -f' > /root/${RAND1}
-echo "set timeout -1
-spawn /usr/local/bin/znc --makepass -n
-expect {
-password {send \"${ZNCPASS}\r\" ; exp_continue}
-eof exit
-}" >> /root/${RAND1}
-
-        chmod +x /root/${RAND1}
-
-        /root/${RAND1} > /root/${RAND2}
-
-        HASH="$(cat /root/${RAND2} | grep Hash | awk '{print $3}')"
-        SALT="$(cat /root/${RAND2} | grep Salt | awk '{print $3}')"
+        # ZNC's sha256 method stores sha256(password + salt) in hex. Work it
+        # out here: driving `znc --makepass` through expect echoed the extra
+        # password sends into its output, which sometimes split the Salt line
+        # and saved a salt of "=", so the password did not work.
+        SALT="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+        HASH="$(printf '%s%s' "${ZNCPASS}" "${SALT}" | sha256sum | awk '{print $1}')"
+        if [ "${#SALT}" -ne 20 ] || ! printf '%s' "${HASH}" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "Could not hash the ZNC password." >&2
+            exit 1
+        fi
 
         sed -i 's|USER|'${USERNAME}'|g' /znc-data/configs/znc.conf
         sed -i 's|ZNCPORT|'${ZNCPORT}'|g' /znc-data/configs/znc.conf
         sed -i 's|ZNCHASH|'${HASH}'|g' /znc-data/configs/znc.conf
         sed -i 's|ZNCSALT|'${SALT}'|g' /znc-data/configs/znc.conf
-
-        rm -rf /root/${RAND1}
-        rm -rf /root/${RAND2}
     else
         # so it is an update/migration!
         echo "Updating the ZNC Config"
