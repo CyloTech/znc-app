@@ -12,7 +12,10 @@ RUN apk add git gdb perl-dev python3-dev swig tcl-dev cyrus-sasl-dev openssl ope
 RUN apk add curl bash expect libcap wget
 RUN apk add --update alpine-sdk
 
-RUN wget https://znc.in/releases/znc-1.8.2.tar.gz
+# znc.in has moved 1.8.2 to its archive. The checksum is that of Debian's
+# znc_1.8.2.orig.tar.gz.
+RUN wget https://znc.in/releases/archive/znc-1.8.2.tar.gz \
+    && echo "ff238aae3f2ae0e44e683c4aee17dc8e4fdd261ca9379d83b48a7d422488de0d  znc-1.8.2.tar.gz" | sha256sum -c -
 RUN tar -xzvf znc-1.8.2.tar.gz
 RUN cd znc-1.8.2 && ./configure --with-openssl && make && make install
 RUN rm -fr /znc-1.8.2*
