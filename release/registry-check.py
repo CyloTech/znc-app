@@ -3,7 +3,7 @@
 import subprocess
 import sys
 
-EXPECTED = 'repo.cylo.net/znc:1.8.2-2'
+EXPECTED = 'repo.cylo.net/znc:1.10.3-1'
 # znc:1.8.2-1, the image behind the current default catalogue version.
 CURRENT = 'repo.cylo.net/znc@sha256:a37dfe9c40939a7a54bcd593c3fb657ac306b30adf9e026b2aad6d2e5da4fbf2'
 # znc:latest, the image behind the older 1.8.2 catalogue version.

@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""Release gate for repo.cylo.net/znc:1.8.2-2. Run it on the builder.
+"""Release gate for repo.cylo.net/znc:1.10.3-1. Run it on the builder.
 
-Usage: release/release-gate.py repo.cylo.net/znc:1.8.2-2
+Usage: release/release-gate.py repo.cylo.net/znc:1.10.3-1
 
 Exits 0 only when the exact local image passes every check below and the
 authenticated registry reports the tag definitively absent:
 
 - tests/test-installed-callback.sh (callback helper and sandboxed entrypoint);
 - image: Alpine 3.24, no ZNCPASS in its configuration, no changepassword.sh,
-  the committed entrypoint and callback helper, ZNC 1.8.2;
+  the committed entrypoint and callback helper, ZNC 1.10.3 with Argon2;
 - missing or empty ZNCPASS: the container exits non-zero, sends no installed
   callback and writes no ZNC config;
 - fresh install with a dummy password: IRC login over TLS with it, a wrong
   password is refused, webadmin answers, ZNC runs as UID 1000, one installed
   callback with the token header, and the password is in neither the
-  container log nor /znc-data;
-- restart: same password hash, login still works, no second callback;
+  container log nor /znc-data; after saveconfig the install's SHA-256 hash
+  has become Argon2id;
+- restart: login with the Argon2id hash still works, no second callback;
 - upgrade from znc:1.8.2-1 and from znc:latest, each on its own volume: the
-  existing user's password hash and settings are kept and its password still
-  works, one callback, nothing traced into the log.
+  existing SHA-256 password still works and becomes Argon2id, the user's
+  settings are kept, corecaps is loaded, login works after a restart, one
+  callback, nothing traced into the log. It also reports (without failing)
+  whether 1.8.2-1 still starts on the upgraded volume.
 
 The installed callback goes to a local HTTPS mock that answers as
 api.cylo.io/api.cylo.net on a private Docker network; the containers trust a
@@ -289,11 +292,21 @@ def pass_block(text):
     match = re.search(r'<Pass password>(.*?)</Pass>', match.group(1), re.S)
     assert match, 'no password block for the install user'
     block = dict(re.findall(r'^\s*(\w+) = (\S+)\s*$', match.group(1), re.M))
-    # The install template says sha256; ZNC writes SHA256 when it saves.
-    assert block.get('Method', '').lower() == 'sha256', 'bad method'
-    assert re.fullmatch(r'[0-9a-f]{64}', block.get('Hash', '')), 'bad hash'
-    assert len(block.get('Salt', '')) == 20, 'bad salt'
+    # The install template says sha256; ZNC writes SHA256 when it saves, and
+    # 1.9+ replaces it with Argon2id once the user logs in.
+    method = block.get('Method', '').lower()
+    if method == 'sha256':
+        assert re.fullmatch(r'[0-9a-f]{64}', block.get('Hash', '')), 'bad hash'
+        assert len(block.get('Salt', '')) == 20, 'bad salt'
+    else:
+        assert method == 'argon2id', 'bad method'
+        assert block.get('Hash', '').startswith('$argon2id$'), 'bad hash'
     return block
+
+
+def save_config(name, znc_password):
+    irc(name, znc_password, commands=('PRIVMSG *status :saveconfig',), expect=('Wrote config',))
+    return config(name)
 
 
 def check_runtime(name):
@@ -352,10 +365,12 @@ try:
                  'getcap /usr/local/bin/znc'])
     for path in ('scripts/entrypoint.sh', 'appbox-installed-callback'):
         assert hashlib.sha256((repo_root / path).read_bytes()).hexdigest() in files, path + ' differs'
-    assert 'no-changepassword' in files and 'syntax-ok' in files and 'ZNC 1.8.2' in files, files
+    assert 'no-changepassword' in files and 'syntax-ok' in files and 'ZNC 1.10.3' in files, files
+    assert 'Argon2: yes' in out(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'znc', image, '--version']), \
+        'ZNC built without Argon2'
     assert 'cap_net_bind_service' in files, files
     assert re.search(r'^alpine-3\.24\.\d+$', files, re.M), files
-    print('PASS image: Alpine 3.24, no ZNCPASS default, no changepassword.sh, committed scripts, ZNC 1.8.2',
+    print('PASS image: Alpine 3.24, no ZNCPASS default, no changepassword.sh, committed scripts, ZNC 1.10.3',
           flush=True)
 
     make_tls()
@@ -372,22 +387,27 @@ try:
     assert not ok, 'wrong password accepted'
     check_web(fresh)
     check_runtime(fresh)
-    fresh_block = pass_block(config(fresh))
+    pass_block(config(fresh))
+    fresh_conf = save_config(fresh, password)
+    assert pass_block(fresh_conf)['Method'].lower() == 'argon2id', 'hash not upgraded to Argon2id'
+    assert 'LoadModule = corecaps' in fresh_conf and 'LoadModule = saslplainauth' in fresh_conf, 'default modules'
     found = wait_callbacks(mock, 1)
     assert found[-1]['host'] == 'api.cylo.net' and found[-1]['token'] == callback_token, 'callback without token'
     check_not_logged(fresh, secret_values)
     check_not_stored(fresh, secret_values)
     print('PASS fresh: TLS login, wrong password refused, webadmin, UID 1000, one callback with token, '
-          'nothing secret logged or stored', flush=True)
+          'nothing secret logged or stored, hash upgraded to Argon2id', flush=True)
 
     # --- restart -------------------------------------------------------------------
     command(['docker', 'restart', '--time', '30', fresh])
     wait_login(fresh, password)
-    assert pass_block(config(fresh)) == fresh_block
+    ok, _ = irc(fresh, upgrade_password)
+    assert not ok, 'wrong password accepted after restart'
+    assert pass_block(config(fresh))['Method'].lower() == 'argon2id'
     check_web(fresh)
     wait_callbacks(mock, 1, limit=5)
     check_not_logged(fresh, secret_values)
-    print('PASS restart: same password hash, login works, no second callback', flush=True)
+    print('PASS restart: Argon2id login works, wrong password refused, no second callback', flush=True)
     command(['docker', 'stop', '--time', '30', fresh])
 
     # --- upgrades from the released images ---------------------------------------
@@ -402,15 +422,19 @@ try:
         callbacks_seen += 1
         wait_callbacks(mock, callbacks_seen)
         baseline_conf = config(baseline)
-        baseline_block = pass_block(baseline_conf)
+        assert pass_block(baseline_conf)['Method'].lower() == 'sha256'
         assert 'RealName = Gate preserved' in baseline_conf
         baseline_leaked = upgrade_password in logs(baseline)
         command(['docker', 'stop', '--time', '30', baseline])
         upgraded = launch('upgraded-' + suffix, image, upgrade_volume, upgrade_password)
         wait_login(upgraded, upgrade_password)
-        upgraded_conf = config(upgraded)
-        assert pass_block(upgraded_conf) == baseline_block, 'password hash changed on upgrade'
+        ok, _ = irc(upgraded, password)
+        assert not ok, 'wrong password accepted after upgrade'
+        upgraded_conf = save_config(upgraded, upgrade_password)
+        assert pass_block(upgraded_conf)['Method'].lower() == 'argon2id', 'hash not upgraded to Argon2id'
         assert 'RealName = Gate preserved' in upgraded_conf, 'user settings lost on upgrade'
+        assert 'LoadModule = corecaps' in upgraded_conf, 'corecaps not loaded on upgrade'
+        assert re.search(r'^Version = 1\.10\.3$', upgraded_conf, re.M), 'config version not updated'
         check_web(upgraded)
         check_runtime(upgraded)
         callbacks_seen += 1
@@ -418,9 +442,26 @@ try:
         assert found[-1]['host'] == 'api.cylo.net' and found[-1]['token'] == callback_token
         check_not_logged(upgraded, secret_values)
         check_not_stored(upgraded, secret_values)
+        command(['docker', 'restart', '--time', '30', upgraded])
+        wait_login(upgraded, upgrade_password)
+        wait_callbacks(mock, callbacks_seen, limit=5)
         command(['docker', 'stop', '--time', '30', upgraded])
-        print('PASS upgrade from %s: password hash and user settings kept, login works, one callback, '
-              'nothing secret logged (the baseline logged the password: %s)' % (suffix, baseline_leaked), flush=True)
+        print('PASS upgrade from %s: password still works and became Argon2id, user settings kept, corecaps '
+              'loaded, login works after restart, one callback, nothing secret logged (the baseline logged '
+              'the password: %s)' % (suffix, baseline_leaked), flush=True)
+
+    # --- report what switching back to 1.8.2-1 does (informational) ----------------
+    back = launch('downgrade', registry.CURRENT, upgrade_volume, upgrade_password)
+    outcome = 'starts and accepts the password'
+    try:
+        wait_login(back, upgrade_password, limit=60)
+    except Exception as error:
+        outcome = 'does not work: ' + redact(str(error))[:200]
+    print('INFO switching back to 1.8.2-1 on an upgraded volume: ' + outcome, flush=True)
+    print('--- 1.8.2-1 log on the upgraded volume', flush=True)
+    print(redact(logs(back))[-1500:], flush=True)
+    command(['docker', 'rm', '-f', back])
+    containers.remove(back)
 except Exception as error:
     print('FAIL release gate: ' + type(error).__name__ + ': ' + redact(str(error)), flush=True)
     raise
