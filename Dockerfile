@@ -10,16 +10,21 @@ RUN adduser -D -S -h /znc-data -s /sbin/nologin -G znc znc -u 1000
 
 RUN apk update
 RUN apk add git gdb perl-dev python3-dev swig tcl-dev cyrus-sasl-dev openssl openssl-dev ca-certificates
-RUN apk add curl bash expect libcap wget
+RUN apk add curl bash expect libcap wget cmake argon2-dev
 RUN apk add --update alpine-sdk
 
-# znc.in has moved 1.8.2 to its archive. The checksum is that of Debian's
-# znc_1.8.2.orig.tar.gz.
-RUN wget https://znc.in/releases/archive/znc-1.8.2.tar.gz \
-    && echo "ff238aae3f2ae0e44e683c4aee17dc8e4fdd261ca9379d83b48a7d422488de0d  znc-1.8.2.tar.gz" | sha256sum -c -
-RUN tar -xzvf znc-1.8.2.tar.gz
-RUN cd znc-1.8.2 && ./configure --with-openssl && make && make install
-RUN rm -fr /znc-1.8.2*
+# The tarball's SHA-512 matches the one in Alpine 3.24's znc APKBUILD.
+RUN wget https://znc.in/releases/archive/znc-1.10.3.tar.gz \
+    && echo "68f3f6641b480c041010c5596e1234043e05c9137eda06233845017603095f5b  znc-1.10.3.tar.gz" | sha256sum -c -
+RUN tar -xzvf znc-1.10.3.tar.gz
+# Same optional features as the 1.8.2 build (OpenSSL and IPv6 only), plus
+# Argon2id password hashes. Existing SHA-256 hashes still work and ZNC
+# upgrades them when the user next logs in.
+RUN cd znc-1.10.3 && ./configure --enable-openssl --enable-argon --enable-ipv6 \
+        --disable-cyrus --disable-tcl --disable-perl --disable-python \
+        --disable-charset --disable-i18n \
+    && make && make install
+RUN rm -fr /znc-1.10.3*
 
 RUN mkdir -p /znc-data/configs
 ADD /sources/znc.conf /znc.conf
