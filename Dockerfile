@@ -1,4 +1,4 @@
-FROM alpine:3.18
+FROM alpine:3.24
 
 # ZNCPASS has no default: Appbox always passes the ZNC Password from the
 # install form, and entrypoint.sh refuses to set ZNC up without it.
