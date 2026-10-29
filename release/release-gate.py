@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Release gate for repo.cylo.net/znc:1.8.2-1. Run it on the builder.
+"""Release gate for repo.cylo.net/znc:1.8.2-2. Run it on the builder.
 
-Usage: release/release-gate.py repo.cylo.net/znc:1.8.2-1
+Usage: release/release-gate.py repo.cylo.net/znc:1.8.2-2
 
 Exits 0 only when the exact local image passes every check below and the
 authenticated registry reports the tag definitively absent:
 
 - tests/test-installed-callback.sh (callback helper and sandboxed entrypoint);
-- image: no ZNCPASS in its configuration, no changepassword.sh, the committed
-  entrypoint and callback helper, ZNC 1.8.2;
+- image: Alpine 3.24, no ZNCPASS in its configuration, no changepassword.sh,
+  the committed entrypoint and callback helper, ZNC 1.8.2;
 - missing or empty ZNCPASS: the container exits non-zero, sends no installed
   callback and writes no ZNC config;
 - fresh install with a dummy password: IRC login over TLS with it, a wrong
@@ -16,9 +16,9 @@ authenticated registry reports the tag definitively absent:
   callback with the token header, and the password is in neither the
   container log nor /znc-data;
 - restart: same password hash, login still works, no second callback;
-- upgrade from znc:latest on the same volume: the existing user's password
-  hash and settings are kept and its password still works, one callback,
-  nothing traced into the log.
+- upgrade from znc:1.8.2-1 and from znc:latest, each on its own volume: the
+  existing user's password hash and settings are kept and its password still
+  works, one callback, nothing traced into the log.
 
 The installed callback goes to a local HTTPS mock that answers as
 api.cylo.io/api.cylo.net on a private Docker network; the containers trust a
@@ -346,6 +346,7 @@ try:
     assert details['Config']['Cmd'] == ['/entrypoint.sh']
     files = out(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'sh', image, '-c',
                  'sha256sum /entrypoint.sh /usr/local/bin/appbox-installed-callback; '
+                 'echo alpine-$(cat /etc/alpine-release); '
                  'test ! -e /appbox/scripts/changepassword.sh && echo no-changepassword; '
                  'bash -n /entrypoint.sh && echo syntax-ok; znc --version | head -1; '
                  'getcap /usr/local/bin/znc'])
@@ -353,7 +354,9 @@ try:
         assert hashlib.sha256((repo_root / path).read_bytes()).hexdigest() in files, path + ' differs'
     assert 'no-changepassword' in files and 'syntax-ok' in files and 'ZNC 1.8.2' in files, files
     assert 'cap_net_bind_service' in files, files
-    print('PASS image: no ZNCPASS default, no changepassword.sh, committed scripts, ZNC 1.8.2', flush=True)
+    assert re.search(r'^alpine-3\.24\.\d+$', files, re.M), files
+    print('PASS image: Alpine 3.24, no ZNCPASS default, no changepassword.sh, committed scripts, ZNC 1.8.2',
+          flush=True)
 
     make_tls()
     mock = start_mock()
@@ -387,32 +390,37 @@ try:
     print('PASS restart: same password hash, login works, no second callback', flush=True)
     command(['docker', 'stop', '--time', '30', fresh])
 
-    # --- upgrade from znc:latest ----------------------------------------------------
-    upgrade_volume = new_volume('upgrade')
-    baseline = launch('baseline', registry.CURRENT, upgrade_volume, upgrade_password)
-    wait_login(baseline, upgrade_password)
-    irc(baseline, upgrade_password,
-        commands=('PRIVMSG *controlpanel :Set RealName %s Gate preserved' % user, 'PRIVMSG *status :saveconfig'),
-        expect=('Wrote config',))
-    wait_callbacks(mock, 2)
-    baseline_conf = config(baseline)
-    baseline_block = pass_block(baseline_conf)
-    assert 'RealName = Gate preserved' in baseline_conf
-    baseline_leaked = upgrade_password in logs(baseline)
-    command(['docker', 'stop', '--time', '30', baseline])
-    upgraded = launch('upgraded', image, upgrade_volume, upgrade_password)
-    wait_login(upgraded, upgrade_password)
-    upgraded_conf = config(upgraded)
-    assert pass_block(upgraded_conf) == baseline_block, 'password hash changed on upgrade'
-    assert 'RealName = Gate preserved' in upgraded_conf, 'user settings lost on upgrade'
-    check_web(upgraded)
-    check_runtime(upgraded)
-    found = wait_callbacks(mock, 3)
-    assert found[-1]['host'] == 'api.cylo.net' and found[-1]['token'] == callback_token
-    check_not_logged(upgraded, secret_values)
-    check_not_stored(upgraded, secret_values)
-    print('PASS upgrade from znc:latest: password hash and user settings kept, login works, one callback, '
-          'nothing secret logged (znc:latest logged the password: %s)' % baseline_leaked, flush=True)
+    # --- upgrades from the released images ---------------------------------------
+    callbacks_seen = 1
+    for suffix, baseline_image in (('current', registry.CURRENT), ('legacy', registry.LEGACY)):
+        upgrade_volume = new_volume('upgrade-' + suffix)
+        baseline = launch('baseline-' + suffix, baseline_image, upgrade_volume, upgrade_password)
+        wait_login(baseline, upgrade_password)
+        irc(baseline, upgrade_password,
+            commands=('PRIVMSG *controlpanel :Set RealName %s Gate preserved' % user, 'PRIVMSG *status :saveconfig'),
+            expect=('Wrote config',))
+        callbacks_seen += 1
+        wait_callbacks(mock, callbacks_seen)
+        baseline_conf = config(baseline)
+        baseline_block = pass_block(baseline_conf)
+        assert 'RealName = Gate preserved' in baseline_conf
+        baseline_leaked = upgrade_password in logs(baseline)
+        command(['docker', 'stop', '--time', '30', baseline])
+        upgraded = launch('upgraded-' + suffix, image, upgrade_volume, upgrade_password)
+        wait_login(upgraded, upgrade_password)
+        upgraded_conf = config(upgraded)
+        assert pass_block(upgraded_conf) == baseline_block, 'password hash changed on upgrade'
+        assert 'RealName = Gate preserved' in upgraded_conf, 'user settings lost on upgrade'
+        check_web(upgraded)
+        check_runtime(upgraded)
+        callbacks_seen += 1
+        found = wait_callbacks(mock, callbacks_seen)
+        assert found[-1]['host'] == 'api.cylo.net' and found[-1]['token'] == callback_token
+        check_not_logged(upgraded, secret_values)
+        check_not_stored(upgraded, secret_values)
+        command(['docker', 'stop', '--time', '30', upgraded])
+        print('PASS upgrade from %s: password hash and user settings kept, login works, one callback, '
+              'nothing secret logged (the baseline logged the password: %s)' % (suffix, baseline_leaked), flush=True)
 except Exception as error:
     print('FAIL release gate: ' + type(error).__name__ + ': ' + redact(str(error)), flush=True)
     raise
